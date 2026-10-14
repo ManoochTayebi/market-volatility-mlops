@@ -14,7 +14,7 @@ This repository demonstrates how to connect **market-data ingestion, cloud stora
 
 ## Architecture
 
-`mermaid
+```mermaid
 flowchart TB
     GH["GitHub Actions<br/>CI · scheduled/manual training · deployment"]
     TD["Twelve Data API<br/>Daily OHLCV"]
@@ -44,7 +44,7 @@ flowchart TB
     GH -->|Docker build + push| ACR --> ACA
     BLOB -->|download when predictor initializes| ACA
     USERS <-->|REST API| ACA
-`
+```
 
 The **training/data plane** runs as an Azure ML command job initiated by GitHub Actions. Separately, the **serving/deployment plane** builds a container in Azure Container Registry and deploys it to Azure Container Apps. Model files are transferred through Azure Blob Storage; the current serving code does **not** load approved model versions from the registry.
 
@@ -83,7 +83,7 @@ The portfolio endpoint computes an **equal-weight, zero-correlation approximatio
 
 ## Repository map
 
-`text
+```text
 .
 ├── .github/workflows/
 │   ├── ci.yml                          # Pytest + Docker build
@@ -116,13 +116,13 @@ The portfolio endpoint computes an **equal-weight, zero-correlation approximatio
 ├── docker-compose.yml
 ├── Makefile
 └── .env.example
-`
+```
 
 ## Running locally
 
 **Prerequisites:** Python 3.11. To train against the configured cloud data source, you also need a Twelve Data API key, an accessible Azure SQL database, and corresponding credentials. To serve predictions, trained artifacts must exist locally or be accessible from configured Azure Blob Storage.
 
-`bash
+```bash
 git clone https://github.com/ManoochTayebi/volatility-mlops.git
 cd volatility-mlops
 
@@ -135,13 +135,13 @@ cp .env.example .env
 
 python -m pytest -q
 uvicorn backend.app:app --host 0.0.0.0 --port 8000
-`
+```
 
 Open `http://localhost:8000` for the frontend and `http://localhost:8000/docs` for interactive API documentation.
 
 **Try the API:**
 
-`bash
+```bash
 curl http://localhost:8000/api/health
 
 # Requires a trained AAPL model and realized-volatility artifact:
@@ -151,19 +151,19 @@ curl "http://localhost:8000/api/asset_volatility?asset=AAPL&days=5&historical_pe
 curl -X POST "http://localhost:8000/api/portfolio_volatility" \
   -H "Content-Type: application/json" \
   -d '{"assets":["AAPL","MSFT"],"days":5,"historical_period":30}'
-`
+```
 
 You can also start the app and a local MLflow UI with `docker compose up --build` after configuring `.env`. The UI runs at `http://localhost:8000` and MLflow at `http://localhost:5001`.
 
 ### Data and training commands
 
-`bash
+```bash
 make preflight      # Verify API/SQL configuration and SQL access
 make ingest-full    # Load historical prices
 make ingest-daily   # Incremental daily OHLCV update
 make retrain        # Train GRU models and track in MLflow
 make pipeline       # Preflight → ingestion → retraining → optional Blob upload
-`
+```
 
 The default market data source is `azure_sql`. For a different source, see the `MARKET_DATA_SOURCE` configuration and `backend/dataset.py`. The training commands are not intended to work without the associated data source and credentials.
 
@@ -191,11 +191,11 @@ No real credentials should appear in Git. The Azure setup script uses scale-down
 
 `scripts/retrain_with_mlflow.py` supports **optional** MLflow model registration and an RMSE threshold:
 
-`dotenv
+```dotenv
 MLFLOW_REGISTER_MODELS=true
 MODEL_MAX_RMSE=0.05
 ENFORCE_MODEL_QUALITY_GATE=true
-`
+```
 
 This is an example threshold; it must be selected from a sound validation procedure for the target and units. In the checked-in Azure ML configuration, registration is **disabled**, and artifact upload to the shared `latest/` Blob prefix is **not gated by model approval**. Production-style candidate/champion evaluation, immutable version promotion and rollback remain to be added.
 
