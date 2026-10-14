@@ -1,337 +1,224 @@
-# Volatility MLOps Platform
+# Market Volatility Forecasting — MLOps Platform
 
-Production-style MLOps platform for market volatility forecasting. The project ingests market data, stores it in Azure SQL, trains neural volatility models with Azure ML, tracks experiments with MLflow, publishes model artifacts to Azure Blob Storage, and serves predictions through a containerized FastAPI + web UI application on Azure Container Apps.
+**A cloud-integrated, end-to-end MLOps engineering project for financial time-series forecasting.**
 
-## Platform Dashboard
+[![CI](https://github.com/ManoochTayebi/volatility-mlops/actions/workflows/ci.yml/badge.svg)](https://github.com/ManoochTayebi/volatility-mlops/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![PyTorch](https://img.shields.io/badge/ML-PyTorch%20GRU-orange)
+![Azure](https://img.shields.io/badge/Cloud-Microsoft%20Azure-0078D4)
+![MLflow](https://img.shields.io/badge/Tracking-MLflow-0194E2)
 
-| Area | Status | Notes |
-| --- | --- | --- |
-| CI | Passing | Runs Pytest and builds the Docker image on `main`. |
-| API/UI deployment | Passing | Builds and deploys the FastAPI + frontend container to Azure Container Apps. |
-| Deployment smoke test | Passing | Validates the live `/api/health` endpoint after deployment. |
-| Azure ML retraining | Blocked | Azure ML job starts correctly, but Azure SQL rejects the configured SQL login. |
-| Model registry gate | Available | Optional RMSE threshold before MLflow model registration. |
-| Artifact serving | Available | Latest model artifacts are expected in Azure Blob Storage. |
+This repository demonstrates how to connect **market-data ingestion, cloud storage, time-series model training, experiment tracking, artifact delivery, automated workflows, and a user-facing prediction service**. It uses a PyTorch gated recurrent unit (GRU) network to forecast stock-return volatility, with a FastAPI backend and browser-based asset/portfolio dashboards.
 
-Current cloud blocker:
-
-```text
-Azure MLOps Pipeline -> Azure SQL preflight -> Login failed for user
-```
-
-Verify the GitHub secrets used by the Azure ML workflow:
-
-```text
-AZURE_SQL_SERVER
-AZURE_SQL_DATABASE
-AZURE_SQL_USERNAME
-AZURE_SQL_PASSWORD
-```
+**Project scope:** An end-to-end *MLOps architecture and implementation*, rather than a claim of an always-healthy production service. The deployment workflow has previously succeeded; scheduled Azure retraining is currently blocked by cloud-access configuration. See [Engineering status](#engineering-status) for verified evidence and remaining gaps.
 
 ## Architecture
 
-```text
-Twelve Data API
-   -> ingestion scripts
-   -> Azure SQL Database
-   -> Azure ML training job
-   -> MLflow tracking + optional model registration
-   -> Azure Blob Storage model artifacts
-   -> Azure Container Apps
-   -> FastAPI + frontend
-```
+`mermaid
+flowchart TB
+    GH["GitHub Actions<br/>CI · scheduled/manual training · deployment"]
+    TD["Twelve Data API<br/>Daily OHLCV"]
+    ING["Incremental ingestion<br/>Validation/preflight"]
+    SQL[("Azure SQL<br/>Historical market data")]
+    AZML["Azure Machine Learning<br/>Command job"]
+    PREP["Feature pipeline<br/>Log returns → rolling realized volatility → sequences"]
+    TRAIN["PyTorch GRU<br/>Per-asset training"]
+    EVAL["Chronological holdout<br/>MSE · RMSE · MAE"]
+    MLF["MLflow<br/>Experiments + model artifacts"]
+    GATE{"Optional RMSE gate<br/>for registration"}
+    REG["MLflow Model Registry<br/>(opt-in)"]
+    BLOB[("Azure Blob Storage<br/>Latest model + volatility artifacts")]
+    ACR["Azure Container Registry<br/>Versioned application image"]
+    ACA["Azure Container Apps<br/>FastAPI + static web UI"]
+    USERS["Browser / API clients"]
 
-## MLOps Capabilities
+    GH -->|submit| AZML
+    TD --> ING --> SQL
+    AZML --> ING
+    SQL --> PREP --> TRAIN --> EVAL
+    TRAIN --> MLF
+    EVAL --> MLF
+    EVAL --> GATE
+    GATE -->|enabled and passes| REG
+    TRAIN --> BLOB
+    GH -->|Docker build + push| ACR --> ACA
+    BLOB -->|download when predictor initializes| ACA
+    USERS <-->|REST API| ACA
+`
 
-| Capability | Implementation |
-| --- | --- |
-| Source control | GitHub `main` branch with CI/CD workflows |
-| Data source | Twelve Data OHLCV market data |
-| Data store | Azure SQL Database |
-| Training | PyTorch GRU volatility forecasting model |
-| Experiment tracking | MLflow metrics, parameters, and artifacts |
-| Orchestration | GitHub Actions and Azure ML jobs |
-| Model artifacts | Azure Blob Storage |
-| Serving | FastAPI API and static frontend |
-| Deployment | Docker image pushed to ACR and deployed to Azure Container Apps |
-| Validation | Pytest, preflight checks, live smoke test |
-| Quality gate | Optional RMSE threshold before model registration |
+The **training/data plane** runs as an Azure ML command job initiated by GitHub Actions. Separately, the **serving/deployment plane** builds a container in Azure Container Registry and deploys it to Azure Container Apps. Model files are transferred through Azure Blob Storage; the current serving code does **not** load approved model versions from the registry.
 
-## Repository Structure
+## What this project demonstrates
 
-```text
-backend/
-  app.py                  # FastAPI app and static frontend mounting
-  compute.py              # API business logic
-  predictor.py            # Inference engine
-  nn_trainer.py           # GRU training pipeline
+| MLOps layer | Implementation | Status |
+| --- | --- | --- |
+| Data ingestion | Twelve Data daily OHLCV API, incremental updates and Azure SQL upserts | Implemented |
+| Data preparation | Log returns, rolling realized volatility, GRU input sequences | Implemented |
+| Model training | Configurable PyTorch GRU, per-symbol retraining, optional warm start from local weights | Implemented |
+| Evaluation | Chronological train/test split; MSE, RMSE and MAE | Implemented; horizon correction needed |
+| Experiment tracking | MLflow nested runs, parameters, metrics and artifacts | Implemented |
+| Model registry | Optional MLflow registration with an RMSE threshold | Available; disabled in Azure job |
+| Artifact storage | Models and realized-volatility histories uploaded to Azure Blob | Implemented |
+| Continuous integration | Pytest + Docker build via GitHub Actions | Implemented; previously passing |
+| Training orchestration | Scheduled/manual GitHub Actions → Azure ML job | Implemented; current cloud run failing |
+| Container deployment | Docker → Azure Container Registry → Azure Container Apps | Implemented; previously deployed |
+| Model serving | FastAPI + web interface with on-demand artifact download | Implemented; requires available artifacts |
+| Monitoring / promotion | Basic health endpoint and logs; no enforced production model approval or drift monitoring | Further engineering required |
 
-frontend/
-  index.html
-  asset.html
-  portfolio.html
-  result_*.html
-  app.js
-  style.css
+## ML methodology
 
-scripts/
-  ingest_market_data.py
-  preflight_check.py
-  retrain_with_mlflow.py
-  run_daily_pipeline.py
-  smoke_test_api.py
+The modeling flow is built around **realized volatility**, calculated as a rolling standard deviation of log returns from historical closing prices. For each symbol (for example, `AAPL`, `GOOGL`, or `MSFT`):
 
-src/
-  azure_sql_connect.py
-  twelve_data_client.py
+1. Retrieve time-ordered OHLCV records from Azure SQL.
+2. Compute log returns and rolling realized volatility.
+3. Assemble fixed-length sequences (`WINDOW_SIZE=21` by default).
+4. Split sequences chronologically into training and test partitions.
+5. Train a compact PyTorch GRU with Adam and MSE loss.
+6. Report holdout MSE, RMSE and MAE, log the experiment in MLflow, and save artifacts.
+7. Upload model checkpoints and volatility histories to Blob Storage when cloud artifact upload is enabled.
 
-azure/
-  ml/
-  sql/
+The API provides iterative multi-step forecasts using saved GRU checkpoints. **Known correctness issue:** the current training sequence target is indexed two observations ahead, while the API presents forecasts as one step ahead. Correcting this alignment and retesting performance is a priority before interpreting reported metrics as one-day-ahead forecasting accuracy.
 
-.github/workflows/
-  ci.yml
-  azure-mlops-pipeline.yml
-  azure-container-app-deploy.yml
+The portfolio endpoint computes an **equal-weight, zero-correlation approximation** to portfolio volatility; it is not a full covariance-aware portfolio risk model.
 
-tests/
-```
+## Repository map
 
-## Local Development
+`text
+.
+├── .github/workflows/
+│   ├── ci.yml                          # Pytest + Docker build
+│   ├── azure-mlops-pipeline.yml        # Scheduled Azure ML retraining
+│   └── azure-container-app-deploy.yml # ACR build + Container Apps deployment
+├── azure/
+│   ├── ml/                             # Azure ML job + Conda environment
+│   ├── sql/                            # Database schema
+│   └── setup_low_cost_resources.sh     # Infrastructure provisioning helper
+├── backend/
+│   ├── app.py                          # FastAPI routes + frontend hosting
+│   ├── compute.py                      # Asset/portfolio API logic
+│   ├── dataset.py                      # Returns, realized volatility, sequences
+│   ├── nn_trainer.py                   # GRU and training/evaluation
+│   ├── predictor.py                    # Model loading and inference
+│   └── azure_artifacts.py              # Blob artifact download
+├── frontend/                           # HTML / CSS / JavaScript dashboards
+├── scripts/
+│   ├── preflight_check.py              # Configuration + Azure SQL checks
+│   ├── ingest_market_data.py           # Historical/incremental ingestion
+│   ├── retrain_with_mlflow.py          # Per-asset training + tracking
+│   ├── run_daily_pipeline.py           # Pipeline entry point
+│   ├── upload_artifacts_to_azure_blob.py
+│   └── smoke_test_api.py               # Deployed /api/health check
+├── src/
+│   ├── twelve_data_client.py
+│   └── azure_sql_connect.py
+├── tests/
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile
+└── .env.example
+`
 
-Create the environment:
+## Running locally
 
-```bash
+**Prerequisites:** Python 3.11. To train against the configured cloud data source, you also need a Twelve Data API key, an accessible Azure SQL database, and corresponding credentials. To serve predictions, trained artifacts must exist locally or be accessible from configured Azure Blob Storage.
+
+`bash
+git clone https://github.com/ManoochTayebi/volatility-mlops.git
+cd volatility-mlops
+
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-Create a local `.env` from the template:
-
-```bash
 cp .env.example .env
-```
+# Set your own configuration in .env (never commit credentials).
 
-Run tests:
-
-```bash
 python -m pytest -q
-```
-
-Run the API and frontend locally:
-
-```bash
 uvicorn backend.app:app --host 0.0.0.0 --port 8000
-```
+`
 
-Local endpoints:
+Open `http://localhost:8000` for the frontend and `http://localhost:8000/docs` for interactive API documentation.
 
-```text
-UI          http://localhost:8000
-API root    http://localhost:8000/api
-Health      http://localhost:8000/api/health
-```
+**Try the API:**
 
-Run with Docker:
+`bash
+curl http://localhost:8000/api/health
 
-```bash
-docker compose up --build
-```
+# Requires a trained AAPL model and realized-volatility artifact:
+curl "http://localhost:8000/api/asset_volatility?asset=AAPL&days=5&historical_period=30"
 
-Docker endpoints:
+# Requires corresponding model artifacts for both assets:
+curl -X POST "http://localhost:8000/api/portfolio_volatility" \
+  -H "Content-Type: application/json" \
+  -d '{"assets":["AAPL","MSFT"],"days":5,"historical_period":30}'
+`
 
-```text
-App/UI/API  http://localhost:8000
-MLflow UI   http://localhost:5001
-```
+You can also start the app and a local MLflow UI with `docker compose up --build` after configuring `.env`. The UI runs at `http://localhost:8000` and MLflow at `http://localhost:5001`.
 
-## Pipeline Workflows
+### Data and training commands
 
-### CI
+`bash
+make preflight      # Verify API/SQL configuration and SQL access
+make ingest-full    # Load historical prices
+make ingest-daily   # Incremental daily OHLCV update
+make retrain        # Train GRU models and track in MLflow
+make pipeline       # Preflight → ingestion → retraining → optional Blob upload
+`
 
-Workflow:
+The default market data source is `azure_sql`. For a different source, see the `MARKET_DATA_SOURCE` configuration and `backend/dataset.py`. The training commands are not intended to work without the associated data source and credentials.
 
-```text
-.github/workflows/ci.yml
-```
+## CI, retraining and deployment
 
-Runs on:
+| Workflow | Trigger | Responsibility |
+| --- | --- | --- |
+| [CI](.github/workflows/ci.yml) | Push, PR, manual | Install dependencies, run tests, build Docker image |
+| [Azure MLOps Pipeline](.github/workflows/azure-mlops-pipeline.yml) | Scheduled (Tue–Sat UTC), push, manual | Authenticate to Azure, provision/check ML compute, submit/stream data ingestion and GRU training |
+| [Azure Container App Deploy](.github/workflows/azure-container-app-deploy.yml) | Push, manual | Build/push image to ACR, update Container App, inject storage secret, health smoke test |
 
-```text
-push to main
-pull request
-manual dispatch
-```
+The Azure ML job definition is [`azure/ml/daily_pipeline_job.yml`](azure/ml/daily_pipeline_job.yml). Its command runs preflight checks, daily market ingestion, training/MLflow logging and Blob artifact upload. The deployment workflow builds the FastAPI + frontend container separately. A successful `GET /api/health` smoke test checks the running application, **not** the availability or predictive validity of model artifacts.
 
-Steps:
+### Cloud configuration
 
-```text
-checkout
-install dependencies
-run pytest
-build Docker image
-```
+Use [`.env.example`](.env.example) for configuration names and [the Azure setup guide](docs/azure_mlops_setup.md) for infrastructure instructions.
 
-### Azure Container App Deploy
+**GitHub Actions secrets:** `AZURE_CREDENTIALS`, `TWELVE_DATA_API_KEY`, `AZURE_SQL_SERVER`, `AZURE_SQL_DATABASE`, `AZURE_SQL_USERNAME`, `AZURE_SQL_PASSWORD`, `AZURE_STORAGE_CONNECTION_STRING`.
 
-Workflow:
+**Repository variables:** `AZURE_RESOURCE_GROUP`, `AZURE_LOCATION`, `AZURE_ML_WORKSPACE`, `AZURE_COMPUTE_NAME`, `AZURE_ACR_NAME`, `AZURE_CONTAINER_APP`, `AZURE_CONTAINER_APP_ENV`, `AZURE_SQL_TABLE`, `SYMBOLS`, `AZURE_MODEL_ARTIFACTS_CONTAINER`, `AZURE_MODEL_ARTIFACTS_PREFIX`.
 
-```text
-.github/workflows/azure-container-app-deploy.yml
-```
+No real credentials should appear in Git. The Azure setup script uses scale-down-conscious development defaults (Azure ML compute minimum zero, Container App replicas minimum zero), but deployed services may still incur charges.
 
-Responsibilities:
+### Model registration and quality gates
 
-```text
-login to Azure
-build Docker image
-push image to Azure Container Registry
-deploy/update Azure Container App
-attach runtime secrets
-run live API smoke test
-```
+`scripts/retrain_with_mlflow.py` supports **optional** MLflow model registration and an RMSE threshold:
 
-The smoke test calls:
-
-```bash
-python scripts/smoke_test_api.py --base-url "$APP_BASE_URL"
-```
-
-It validates:
-
-```text
-GET /api/health -> {"status": "ok", ...}
-```
-
-### Azure MLOps Pipeline
-
-Workflow:
-
-```text
-.github/workflows/azure-mlops-pipeline.yml
-```
-
-Responsibilities:
-
-```text
-login to Azure
-ensure Azure ML compute exists
-submit Azure ML job
-run data preflight
-ingest market data
-train volatility models
-log metrics and artifacts
-upload latest model artifacts to Blob Storage
-refresh the serving app revision
-```
-
-This workflow is currently blocked by Azure SQL authentication. Azure login and Azure ML compute creation are working.
-
-## Configuration
-
-Required GitHub secrets:
-
-```text
-AZURE_CREDENTIALS
-TWELVE_DATA_API_KEY
-AZURE_SQL_SERVER
-AZURE_SQL_DATABASE
-AZURE_SQL_USERNAME
-AZURE_SQL_PASSWORD
-AZURE_STORAGE_CONNECTION_STRING
-```
-
-Common GitHub repository variables:
-
-```text
-AZURE_RESOURCE_GROUP
-AZURE_LOCATION
-AZURE_ML_WORKSPACE
-AZURE_COMPUTE_NAME
-AZURE_COMPUTE_SIZE
-AZURE_COMPUTE_TIER
-AZURE_ACR_NAME
-AZURE_CONTAINER_APP
-AZURE_CONTAINER_APP_ENV
-AZURE_SQL_TABLE
-AZURE_MODEL_ARTIFACTS_CONTAINER
-AZURE_MODEL_ARTIFACTS_PREFIX
-SYMBOLS
-```
-
-Recommended development defaults:
-
-```text
-AZURE_COMPUTE_SIZE=Standard_DS2_v2
-AZURE_COMPUTE_TIER=dedicated
-AZURE_MODEL_ARTIFACTS_CONTAINER=volatility-model-artifacts
-AZURE_MODEL_ARTIFACTS_PREFIX=latest
-AZURE_SQL_TABLE=dbo.daily_stock_prices
-SYMBOLS=AAPL,GOOGL,MSFT
-```
-
-## Model Quality Gate
-
-Model registration can be protected with an RMSE threshold:
-
-```text
+`dotenv
 MLFLOW_REGISTER_MODELS=true
 MODEL_MAX_RMSE=0.05
 ENFORCE_MODEL_QUALITY_GATE=true
-```
+`
 
-Behavior:
+This is an example threshold; it must be selected from a sound validation procedure for the target and units. In the checked-in Azure ML configuration, registration is **disabled**, and artifact upload to the shared `latest/` Blob prefix is **not gated by model approval**. Production-style candidate/champion evaluation, immutable version promotion and rollback remain to be added.
 
-```text
-RMSE <= MODEL_MAX_RMSE -> model registration allowed
-RMSE > MODEL_MAX_RMSE  -> model registration blocked
-ENFORCE_MODEL_QUALITY_GATE=true -> training job fails when the gate is not met
-```
+## Engineering status
 
-## Operational Notes
+This is an implemented full-lifecycle **portfolio project** with historical cloud execution, not a currently verified production service.
 
-Cost-aware defaults are used where possible:
+- **CI:** Tests and Docker build passed on [June 29, 2026](https://github.com/ManoochTayebi/volatility-mlops/actions/runs/28361009891).
+- **Cloud serving:** ACR build, Azure Container Apps deployment and the health smoke test passed on [June 26, 2026](https://github.com/ManoochTayebi/volatility-mlops/actions/runs/28235049696); the following [June 29 deployment attempt](https://github.com/ManoochTayebi/volatility-mlops/actions/runs/28361009917) failed at image build/push.
+- **Azure ML retraining:** The latest checked run, on [August 28, 2026](https://github.com/ManoochTayebi/volatility-mlops/actions/runs/33180593073), stopped at `azure/login` with `No subscriptions found`. Older project notes also record an Azure SQL login blocker. Fixing subscription/service-principal access comes before another cloud end-to-end verification.
+- **Limitations to address:** One-step target alignment; model-vs-baseline validation; enforced registry promotion; tested model-serving readiness; trading-calendar dates; correlation-aware portfolio risk; drift/quality monitoring and rollback.
 
-```text
-Azure ML compute: min instances 0, max instances 1
-Container App: min replicas 0, max replicas 1
-Small development VM size: Standard_DS2_v2
-```
+These limitations are documented intentionally so the architecture, implementation and empirical verification are not conflated.
 
-Infrastructure resources should be managed intentionally:
+## Next engineering milestones
 
-```text
-Use one resource group for the dev environment.
-Use one Container Apps environment for the serving app.
-Use one Log Analytics workspace for Container Apps monitoring.
-Keep generated model artifacts in Blob Storage, not Git.
-Keep credentials in GitHub Secrets or local .env files only.
-```
+1. **Correct forecasting semantics:** align training targets with serving horizons and add time-series backtesting and baseline comparisons.
+2. **Restore cloud execution:** verify service-principal subscription permissions, Azure SQL connectivity and current ACR deployment.
+3. **Make model promotion explicit:** version candidate artifacts; evaluate against baseline/champion; promote approved versions only; make serving load a pinned approved model.
+4. **Strengthen operational quality:** test `asset_volatility` with real artifacts, add readiness and data freshness checks, monitor prediction quality/drift, and support rollback.
 
-## Security
+---
 
-- `.env` and `.env.*` are ignored by Git.
-- `.env.example` is a template and must not contain real credentials.
-- GitHub Secrets are used for CI/CD credentials.
-- Azure SQL credentials are validated by the preflight step before ingestion/training.
-- Model and data artifacts are externalized to Azure services.
+**Stack:** Python · Pandas · PyTorch · MLflow · FastAPI · Docker · GitHub Actions · Azure Machine Learning · Azure SQL · Azure Blob Storage · Azure Container Registry · Azure Container Apps · HTML/CSS/JavaScript
 
-## Azure Setup
-
-The `main` branch contains a low-cost Azure path using:
-
-```text
-Azure SQL Database
-Azure Machine Learning
-Azure Blob Storage
-Azure Container Registry
-Azure Container Apps
-Log Analytics
-```
-
-Detailed Azure setup notes are available in:
-
-```text
-docs/azure_mlops_setup.md
-```
+**Purpose:** Demonstrate practical ML engineering and cloud MLOps design through a real financial forecasting application, including the operational challenges of automating the data-to-serving lifecycle.
